@@ -149,6 +149,35 @@ src/
 
 4. **Realtime deduplication**: When a user adds a bookmark, it appears in the list from the direct insert response. The realtime `INSERT` event is deduplicated by checking if the bookmark ID already exists in state.
 
+## Problems Faced & Solutions
+
+### 1. RLS policy blocking bookmark inserts
+**Problem**: After setting up Row Level Security, inserting bookmarks failed with `"new row violates row-level security policy"`. The insert was going through but Supabase rejected it.
+
+**Root cause**: The RLS `INSERT` policy uses `WITH CHECK (auth.uid() = user_id)`, which requires the `user_id` column to match the authenticated user. But the client-side insert wasn't including `user_id` in the payload — it relied on the database to somehow know who was inserting.
+
+**Solution**: Before inserting, fetch the current user via `supabase.auth.getUser()` and explicitly pass `user_id: user.id` in the insert payload. RLS doesn't auto-populate columns; it only *checks* them.
+
+### 2. Realtime duplicates after adding a bookmark
+**Problem**: When adding a bookmark, it would briefly appear twice in the list — once from the direct insert response and once from the Realtime WebSocket `INSERT` event.
+
+**Solution**: Added deduplication in the Realtime handler and the optimistic insert. Both check `if (prev.some((b) => b.id === newBookmark.id)) return prev` before adding to state, so whichever arrives second is a no-op.
+
+### 3. Google OAuth provider not enabled error
+**Problem**: Clicking "Sign in with Google" returned `{"code":400,"error_code":"validation_failed","msg":"Unsupported provider: provider is not enabled"}`.
+
+**Solution**: The Google provider toggle in Supabase (Authentication → Sign In / Providers → Google) wasn't saved properly. Re-enabled it, pasted the Client ID and Secret from Google Cloud Console, and saved. The toggle needs to be explicitly ON *and* saved.
+
+### 4. Optimistic delete rollback consistency
+**Problem**: If a delete fails server-side (e.g., network error), the bookmark needs to reappear in the exact same position. Naively re-fetching would cause a flash.
+
+**Solution**: Capture the full `bookmarks` array before the optimistic removal. On error, restore the entire previous array via `setBookmarks(previous)`, which puts the bookmark back in its original position without any visual disruption.
+
+### 5. Supabase cookie handling in Server Components
+**Problem**: `setAll` in the Supabase server client throws when called from a Server Component (since Server Components can't set cookies).
+
+**Solution**: Wrapped the `setAll` logic in a try/catch that silently ignores the error. This is safe because the middleware handles session refresh on every request — the Server Component only needs to *read* the session, not write it.
+
 ## Deployment (Vercel)
 
 1. Push to GitHub
