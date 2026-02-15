@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 import type { Bookmark, BookmarkInsert } from "@/lib/types/database";
 import { getFaviconUrl } from "@/lib/utils";
@@ -8,9 +8,10 @@ import { getFaviconUrl } from "@/lib/utils";
 export function useRealtimeBookmarks(initialBookmarks: Bookmark[]) {
   const [bookmarks, setBookmarks] = useState<Bookmark[]>(initialBookmarks);
   const [error, setError] = useState<string | null>(null);
-  const supabase = createClient();
+  const supabaseRef = useRef(createClient());
+  const supabase = supabaseRef.current;
 
-  // Realtime subscription
+  // Realtime subscription — runs once on mount
   useEffect(() => {
     const channel = supabase
       .channel("bookmarks-realtime")
@@ -23,7 +24,6 @@ export function useRealtimeBookmarks(initialBookmarks: Bookmark[]) {
         },
         (payload) => {
           const newBookmark = payload.new as Bookmark;
-          // Prevent duplicate from the optimistic insert
           setBookmarks((prev) => {
             if (prev.some((b) => b.id === newBookmark.id)) return prev;
             return [newBookmark, ...prev];
@@ -89,7 +89,6 @@ export function useRealtimeBookmarks(initialBookmarks: Bookmark[]) {
         return false;
       }
 
-      // Optimistically add (realtime will deduplicate)
       if (newBookmark) {
         setBookmarks((prev) => {
           if (prev.some((b) => b.id === newBookmark.id)) return prev;
@@ -106,22 +105,26 @@ export function useRealtimeBookmarks(initialBookmarks: Bookmark[]) {
     async (id: string) => {
       setError(null);
 
-      // Optimistic delete
-      const previous = bookmarks;
-      setBookmarks((prev) => prev.filter((b) => b.id !== id));
+      setBookmarks((prev) => {
+        const previous = prev;
+        const next = prev.filter((b) => b.id !== id);
 
-      const { error: deleteError } = await supabase
-        .from("bookmarks")
-        .delete()
-        .eq("id", id);
+        // Fire delete in background, rollback on error
+        supabase
+          .from("bookmarks")
+          .delete()
+          .eq("id", id)
+          .then(({ error: deleteError }) => {
+            if (deleteError) {
+              setBookmarks(previous);
+              setError(deleteError.message);
+            }
+          });
 
-      if (deleteError) {
-        // Rollback
-        setBookmarks(previous);
-        setError(deleteError.message);
-      }
+        return next;
+      });
     },
-    [supabase, bookmarks]
+    [supabase]
   );
 
   return { bookmarks, error, addBookmark, deleteBookmark };
