@@ -11,10 +11,10 @@ export function useRealtimeBookmarks(initialBookmarks: Bookmark[]) {
   const supabaseRef = useRef(createClient());
   const supabase = supabaseRef.current;
 
-  // Realtime subscription — runs once on mount
   useEffect(() => {
-    const channel = supabase
-      .channel("bookmarks-realtime")
+    // Channel for postgres DELETE/UPDATE events
+    const pgChannel = supabase
+      .channel("bookmarks-pg")
       .on(
         "postgres_changes",
         {
@@ -40,14 +40,23 @@ export function useRealtimeBookmarks(initialBookmarks: Bookmark[]) {
           }
         }
       )
-      .subscribe((status) => {
-        if (status === "CHANNEL_ERROR") {
-          console.error("Realtime subscription error");
-        }
-      });
+      .subscribe();
+
+    // Broadcast channel for reliable cross-tab INSERT sync
+    const broadcastChannel = supabase
+      .channel("bookmarks-broadcast")
+      .on("broadcast", { event: "new-bookmark" }, (payload) => {
+        const newBookmark = payload.payload as Bookmark;
+        setBookmarks((prev) => {
+          if (prev.some((b) => b.id === newBookmark.id)) return prev;
+          return [newBookmark, ...prev];
+        });
+      })
+      .subscribe();
 
     return () => {
-      supabase.removeChannel(channel);
+      supabase.removeChannel(pgChannel);
+      supabase.removeChannel(broadcastChannel);
     };
   }, [supabase]);
 
@@ -78,9 +87,17 @@ export function useRealtimeBookmarks(initialBookmarks: Bookmark[]) {
       }
 
       if (newBookmark) {
+        // Add to local state
         setBookmarks((prev) => {
           if (prev.some((b) => b.id === newBookmark.id)) return prev;
           return [newBookmark as Bookmark, ...prev];
+        });
+
+        // Broadcast to other tabs
+        supabase.channel("bookmarks-broadcast").send({
+          type: "broadcast",
+          event: "new-bookmark",
+          payload: newBookmark,
         });
       }
 
