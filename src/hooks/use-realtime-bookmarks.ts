@@ -18,45 +18,33 @@ export function useRealtimeBookmarks(initialBookmarks: Bookmark[]) {
       .on(
         "postgres_changes",
         {
-          event: "INSERT",
+          event: "*",
           schema: "public",
           table: "bookmarks",
         },
         (payload) => {
-          const newBookmark = payload.new as Bookmark;
-          setBookmarks((prev) => {
-            if (prev.some((b) => b.id === newBookmark.id)) return prev;
-            return [newBookmark, ...prev];
-          });
+          if (payload.eventType === "INSERT") {
+            const newBookmark = payload.new as Bookmark;
+            setBookmarks((prev) => {
+              if (prev.some((b) => b.id === newBookmark.id)) return prev;
+              return [newBookmark, ...prev];
+            });
+          } else if (payload.eventType === "DELETE") {
+            const deletedId = (payload.old as { id: string }).id;
+            setBookmarks((prev) => prev.filter((b) => b.id !== deletedId));
+          } else if (payload.eventType === "UPDATE") {
+            const updated = payload.new as Bookmark;
+            setBookmarks((prev) =>
+              prev.map((b) => (b.id === updated.id ? updated : b))
+            );
+          }
         }
       )
-      .on(
-        "postgres_changes",
-        {
-          event: "DELETE",
-          schema: "public",
-          table: "bookmarks",
-        },
-        (payload) => {
-          const deletedId = payload.old.id as string;
-          setBookmarks((prev) => prev.filter((b) => b.id !== deletedId));
+      .subscribe((status) => {
+        if (status === "CHANNEL_ERROR") {
+          console.error("Realtime subscription error");
         }
-      )
-      .on(
-        "postgres_changes",
-        {
-          event: "UPDATE",
-          schema: "public",
-          table: "bookmarks",
-        },
-        (payload) => {
-          const updated = payload.new as Bookmark;
-          setBookmarks((prev) =>
-            prev.map((b) => (b.id === updated.id ? updated : b))
-          );
-        }
-      )
-      .subscribe();
+      });
 
     return () => {
       supabase.removeChannel(channel);
@@ -109,7 +97,6 @@ export function useRealtimeBookmarks(initialBookmarks: Bookmark[]) {
         const previous = prev;
         const next = prev.filter((b) => b.id !== id);
 
-        // Fire delete in background, rollback on error
         supabase
           .from("bookmarks")
           .delete()
